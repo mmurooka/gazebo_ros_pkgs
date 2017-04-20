@@ -6,6 +6,7 @@ find_package(catkin REQUIRED COMPONENTS
   trajectory_msgs
   geometry_msgs
   sensor_msgs
+  nav_msgs
   std_srvs
   message_generation
   )
@@ -46,6 +47,7 @@ add_service_files(DIRECTORY srv FILES
   SetPhysicsProperties.srv
   SetJointTrajectory.srv
   SetPose.srv
+  GetOdometry.srv
   )
 
 generate_messages(DEPENDENCIES
@@ -53,6 +55,7 @@ generate_messages(DEPENDENCIES
   geometry_msgs
   sensor_msgs
   trajectory_msgs
+  nav_msgs
   )
 
 catkin_package(
