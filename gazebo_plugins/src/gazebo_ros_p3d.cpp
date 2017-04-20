@@ -42,6 +42,9 @@ GazeboRosP3D::~GazeboRosP3D()
   this->p3d_queue_.clear();
   this->p3d_queue_.disable();
   this->callback_queue_thread_.join();
+  this->p3d_service_queue_.clear();
+  this->p3d_service_queue_.disable();
+  this->service_callback_queue_thread_.join();
   delete this->rosnode_;
 }
 
@@ -75,13 +78,19 @@ void GazeboRosP3D::Load(physics::ModelPtr _parent, sdf::ElementPtr _sdf)
     return;
   }
 
-  if (!_sdf->HasElement("topicName"))
+  if (_sdf->HasElement("topicName"))
   {
-    ROS_FATAL("p3d plugin missing <topicName>, cannot proceed");
-    return;
+    this->topic_name_ = _sdf->GetElement("topicName")->Get<std::string>();
   }
   else
-    this->topic_name_ = _sdf->GetElement("topicName")->Get<std::string>();
+    this->topic_name_ = "";
+
+  if (_sdf->HasElement("serviceName"))
+  {
+    this->service_name_ = _sdf->GetElement("serviceName")->Get<std::string>();
+  }
+  else
+    this->service_name_ = "";
 
   if (!_sdf->HasElement("frameName"))
   {
@@ -149,6 +158,16 @@ void GazeboRosP3D::Load(physics::ModelPtr _parent, sdf::ElementPtr _sdf)
       this->rosnode_->advertise<nav_msgs::Odometry>(this->topic_name_, 1);
   }
 
+  if (this->service_name_ != "")
+  {
+    ros::AdvertiseServiceOptions srv_aso =
+      ros::AdvertiseServiceOptions::create<gazebo_msgs::GetOdometry>(
+      this->service_name_,
+      boost::bind(&GazeboRosP3D::UpdateChild, this, _1, _2),
+      ros::VoidPtr(), &this->p3d_service_queue_);
+    this->srv_ = this->rosnode_->advertiseService(srv_aso);
+  }
+
   this->last_time_ = this->world_->GetSimTime();
   // initialize body
   this->last_vpos_ = this->link_->GetWorldLinearVel();
@@ -186,6 +205,9 @@ void GazeboRosP3D::Load(physics::ModelPtr _parent, sdf::ElementPtr _sdf)
   // start custom queue for p3d
   this->callback_queue_thread_ = boost::thread(
     boost::bind(&GazeboRosP3D::P3DQueueThread, this));
+  this->service_callback_queue_thread_ = boost::thread(
+    boost::bind(&GazeboRosP3D::P3DServiceQueueThread, this));
+
 
   // New Mechanism for Updating every World Cycle
   // Listen to the update event. This event is broadcast every
@@ -208,117 +230,128 @@ void GazeboRosP3D::UpdateChild()
       (cur_time-this->last_time_).Double() < (1.0/this->update_rate_))
     return;
 
-  if (this->pub_.getNumSubscribers() > 0)
-  {
+  if (this->pub_.getNumSubscribers() > 0) {
     // differentiate to get accelerations
     double tmp_dt = cur_time.Double() - this->last_time_.Double();
-    if (tmp_dt != 0)
-    {
-      this->lock.lock();
-
-      if (this->topic_name_ != "")
-      {
-        // copy data into pose message
-        this->pose_msg_.header.frame_id = this->tf_frame_name_;
-        this->pose_msg_.header.stamp.sec = cur_time.sec;
-        this->pose_msg_.header.stamp.nsec = cur_time.nsec;
-
-
-        math::Pose pose, frame_pose;
-        math::Vector3 frame_vpos;
-        math::Vector3 frame_veul;
-
-        // get inertial Rates
-        math::Vector3 vpos = this->link_->GetWorldLinearVel();
-        math::Vector3 veul = this->link_->GetWorldAngularVel();
-
-        // Get Pose/Orientation
-        pose = this->link_->GetWorldPose();
-
-        // Apply Reference Frame
-        if (this->reference_link_)
-        {
-          // convert to relative pose
-          frame_pose = this->reference_link_->GetWorldPose();
-          pose.pos = pose.pos - frame_pose.pos;
-          pose.pos = frame_pose.rot.RotateVectorReverse(pose.pos);
-          pose.rot *= frame_pose.rot.GetInverse();
-          // convert to relative rates
-          frame_vpos = this->reference_link_->GetWorldLinearVel();
-          frame_veul = this->reference_link_->GetWorldAngularVel();
-          vpos = frame_pose.rot.RotateVector(vpos - frame_vpos);
-          veul = frame_pose.rot.RotateVector(veul - frame_veul);
-        }
-
-        // Apply Constant Offsets
-        // apply xyz offsets and get position and rotation components
-        pose.pos = pose.pos + this->offset_.pos;
-        // apply rpy offsets
-        pose.rot = this->offset_.rot*pose.rot;
-        pose.rot.Normalize();
-
-        // compute accelerations (not used)
-        this->apos_ = (this->last_vpos_ - vpos) / tmp_dt;
-        this->aeul_ = (this->last_veul_ - veul) / tmp_dt;
-        this->last_vpos_ = vpos;
-        this->last_veul_ = veul;
-
-        this->frame_apos_ = (this->last_frame_vpos_ - frame_vpos) / tmp_dt;
-        this->frame_aeul_ = (this->last_frame_veul_ - frame_veul) / tmp_dt;
-        this->last_frame_vpos_ = frame_vpos;
-        this->last_frame_veul_ = frame_veul;
-
-        // Fill out messages
-        this->pose_msg_.pose.pose.position.x    = pose.pos.x;
-        this->pose_msg_.pose.pose.position.y    = pose.pos.y;
-        this->pose_msg_.pose.pose.position.z    = pose.pos.z;
-
-        this->pose_msg_.pose.pose.orientation.x = pose.rot.x;
-        this->pose_msg_.pose.pose.orientation.y = pose.rot.y;
-        this->pose_msg_.pose.pose.orientation.z = pose.rot.z;
-        this->pose_msg_.pose.pose.orientation.w = pose.rot.w;
-
-        this->pose_msg_.twist.twist.linear.x  = vpos.x +
-          this->GaussianKernel(0, this->gaussian_noise_);
-        this->pose_msg_.twist.twist.linear.y  = vpos.y +
-          this->GaussianKernel(0, this->gaussian_noise_);
-        this->pose_msg_.twist.twist.linear.z  = vpos.z +
-          this->GaussianKernel(0, this->gaussian_noise_);
-        // pass euler angular rates
-        this->pose_msg_.twist.twist.angular.x = veul.x +
-          this->GaussianKernel(0, this->gaussian_noise_);
-        this->pose_msg_.twist.twist.angular.y = veul.y +
-          this->GaussianKernel(0, this->gaussian_noise_);
-        this->pose_msg_.twist.twist.angular.z = veul.z +
-          this->GaussianKernel(0, this->gaussian_noise_);
-
-        // fill in covariance matrix
-        /// @todo: let user set separate linear and angular covariance values.
-        double gn2 = this->gaussian_noise_*this->gaussian_noise_;
-        this->pose_msg_.pose.covariance[0] = gn2;
-        this->pose_msg_.pose.covariance[7] = gn2;
-        this->pose_msg_.pose.covariance[14] = gn2;
-        this->pose_msg_.pose.covariance[21] = gn2;
-        this->pose_msg_.pose.covariance[28] = gn2;
-        this->pose_msg_.pose.covariance[35] = gn2;
-
-        this->pose_msg_.twist.covariance[0] = gn2;
-        this->pose_msg_.twist.covariance[7] = gn2;
-        this->pose_msg_.twist.covariance[14] = gn2;
-        this->pose_msg_.twist.covariance[21] = gn2;
-        this->pose_msg_.twist.covariance[28] = gn2;
-        this->pose_msg_.twist.covariance[35] = gn2;
-
+    if (tmp_dt != 0) {
+      if (this->topic_name_ != "") {
+        UpdatePose();
         // publish to ros
         this->pub_Queue->push(this->pose_msg_, this->pub_);
+        // save last time stamp
+        this->last_time_ = cur_time;
       }
-
-      this->lock.unlock();
-
-      // save last time stamp
-      this->last_time_ = cur_time;
     }
   }
+}
+
+bool GazeboRosP3D::UpdateChild(const gazebo_msgs::GetOdometry::Request& req,
+                               gazebo_msgs::GetOdometry::Response& res)
+{
+  UpdatePose();
+  res.pose = this->pose_msg_;
+  return true;
+}
+
+void GazeboRosP3D::UpdatePose()
+{
+  common::Time cur_time = this->world_->GetSimTime();
+  double tmp_dt = cur_time.Double() - this->last_time_.Double();
+
+  this->lock.lock();
+
+  // copy data into pose message
+  this->pose_msg_.header.frame_id = this->tf_frame_name_;
+  this->pose_msg_.header.stamp.sec = cur_time.sec;
+  this->pose_msg_.header.stamp.nsec = cur_time.nsec;
+
+
+  math::Pose pose, frame_pose;
+  math::Vector3 frame_vpos;
+  math::Vector3 frame_veul;
+
+  // get inertial Rates
+  math::Vector3 vpos = this->link_->GetWorldLinearVel();
+  math::Vector3 veul = this->link_->GetWorldAngularVel();
+
+  // Get Pose/Orientation
+  pose = this->link_->GetWorldPose();
+
+  // Apply Reference Frame
+  if (this->reference_link_)
+    {
+      // convert to relative pose
+      frame_pose = this->reference_link_->GetWorldPose();
+      pose.pos = pose.pos - frame_pose.pos;
+      pose.pos = frame_pose.rot.RotateVectorReverse(pose.pos);
+      pose.rot *= frame_pose.rot.GetInverse();
+      // convert to relative rates
+      frame_vpos = this->reference_link_->GetWorldLinearVel();
+      frame_veul = this->reference_link_->GetWorldAngularVel();
+      vpos = frame_pose.rot.RotateVector(vpos - frame_vpos);
+      veul = frame_pose.rot.RotateVector(veul - frame_veul);
+    }
+
+  // Apply Constant Offsets
+  // apply xyz offsets and get position and rotation components
+  pose.pos = pose.pos + this->offset_.pos;
+  // apply rpy offsets
+  pose.rot = this->offset_.rot*pose.rot;
+  pose.rot.Normalize();
+
+  // compute accelerations (not used)
+  this->apos_ = (this->last_vpos_ - vpos) / tmp_dt;
+  this->aeul_ = (this->last_veul_ - veul) / tmp_dt;
+  this->last_vpos_ = vpos;
+  this->last_veul_ = veul;
+
+  this->frame_apos_ = (this->last_frame_vpos_ - frame_vpos) / tmp_dt;
+  this->frame_aeul_ = (this->last_frame_veul_ - frame_veul) / tmp_dt;
+  this->last_frame_vpos_ = frame_vpos;
+  this->last_frame_veul_ = frame_veul;
+
+  // Fill out messages
+  this->pose_msg_.pose.pose.position.x    = pose.pos.x;
+  this->pose_msg_.pose.pose.position.y    = pose.pos.y;
+  this->pose_msg_.pose.pose.position.z    = pose.pos.z;
+
+  this->pose_msg_.pose.pose.orientation.x = pose.rot.x;
+  this->pose_msg_.pose.pose.orientation.y = pose.rot.y;
+  this->pose_msg_.pose.pose.orientation.z = pose.rot.z;
+  this->pose_msg_.pose.pose.orientation.w = pose.rot.w;
+
+  this->pose_msg_.twist.twist.linear.x  = vpos.x +
+    this->GaussianKernel(0, this->gaussian_noise_);
+  this->pose_msg_.twist.twist.linear.y  = vpos.y +
+    this->GaussianKernel(0, this->gaussian_noise_);
+  this->pose_msg_.twist.twist.linear.z  = vpos.z +
+    this->GaussianKernel(0, this->gaussian_noise_);
+  // pass euler angular rates
+  this->pose_msg_.twist.twist.angular.x = veul.x +
+    this->GaussianKernel(0, this->gaussian_noise_);
+  this->pose_msg_.twist.twist.angular.y = veul.y +
+    this->GaussianKernel(0, this->gaussian_noise_);
+  this->pose_msg_.twist.twist.angular.z = veul.z +
+    this->GaussianKernel(0, this->gaussian_noise_);
+
+  // fill in covariance matrix
+  /// @todo: let user set separate linear and angular covariance values.
+  double gn2 = this->gaussian_noise_*this->gaussian_noise_;
+  this->pose_msg_.pose.covariance[0] = gn2;
+  this->pose_msg_.pose.covariance[7] = gn2;
+  this->pose_msg_.pose.covariance[14] = gn2;
+  this->pose_msg_.pose.covariance[21] = gn2;
+  this->pose_msg_.pose.covariance[28] = gn2;
+  this->pose_msg_.pose.covariance[35] = gn2;
+
+  this->pose_msg_.twist.covariance[0] = gn2;
+  this->pose_msg_.twist.covariance[7] = gn2;
+  this->pose_msg_.twist.covariance[14] = gn2;
+  this->pose_msg_.twist.covariance[21] = gn2;
+  this->pose_msg_.twist.covariance[28] = gn2;
+  this->pose_msg_.twist.covariance[35] = gn2;
+
+  this->lock.unlock();
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -356,4 +389,15 @@ void GazeboRosP3D::P3DQueueThread()
     this->p3d_queue_.callAvailable(ros::WallDuration(timeout));
   }
 }
+
+void GazeboRosP3D::P3DServiceQueueThread()
+{
+  static const double timeout = 0.01;
+
+  while (this->rosnode_->ok())
+  {
+    this->p3d_service_queue_.callAvailable(ros::WallDuration(timeout));
+  }
+}
+
 }

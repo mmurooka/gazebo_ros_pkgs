@@ -31,6 +31,7 @@
 
 #include <ros/ros.h>
 #include <nav_msgs/Odometry.h>
+#include <gazebo_msgs/GetOdometry.h>
 
 #include <ros/callback_queue.h>
 #include <ros/advertise_options.h>
@@ -58,6 +59,9 @@ namespace gazebo
 
     /// \brief Update the controller
     protected: virtual void UpdateChild();
+    protected: virtual bool UpdateChild(const gazebo_msgs::GetOdometry::Request& req,
+                                        gazebo_msgs::GetOdometry::Response& res);
+    private: void UpdatePose();
 
     private: physics::WorldPtr world_;
     private: physics::ModelPtr model_;
@@ -72,6 +76,7 @@ namespace gazebo
     /// \brief pointer to ros node
     private: ros::NodeHandle* rosnode_;
     private: ros::Publisher pub_;
+    private: ros::ServiceServer srv_;
     private: PubQueue<nav_msgs::Odometry>::Ptr pub_Queue;
 
     /// \brief ros message
@@ -82,6 +87,7 @@ namespace gazebo
 
     /// \brief topic name
     private: std::string topic_name_;
+    private: std::string service_name_;
 
     /// \brief frame transform name, should match link name
     /// FIXME: extract link name directly?
@@ -117,9 +123,13 @@ namespace gazebo
     /// \brief for setting ROS name space
     private: std::string robot_namespace_;
 
+    // Custom Callback Queue
     private: ros::CallbackQueue p3d_queue_;
+    private: ros::CallbackQueue p3d_service_queue_;
     private: void P3DQueueThread();
+    private: void P3DServiceQueueThread();
     private: boost::thread callback_queue_thread_;
+    private: boost::thread service_callback_queue_thread_;
 
     // Pointer to the update event connection
     private: event::ConnectionPtr update_connection_;
