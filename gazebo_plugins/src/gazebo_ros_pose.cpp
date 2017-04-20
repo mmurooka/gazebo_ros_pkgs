@@ -166,6 +166,7 @@ bool GazeboRosPose::UpdateObjectPose(const gazebo_msgs::SetPose::Request& req,
                                      const gazebo_msgs::SetPose::Response& res)
 {
   this->pose_msg_ = req.pose;
+  this->use_velocity_feedback_ = req.use_velocity_feedback;
   UpdateChild();
   return true;
 }
@@ -195,7 +196,6 @@ void GazeboRosPose::UpdateChild()
     math:: Pose diff_pose = target_pose - current_pose;
     math::Vector3 diff_pos = diff_pose.pos;
     math::Quaternion diff_rot = diff_pose.rot;
-    ROS_INFO_STREAM("target_pose - current_pose: " << target_pose - current_pose);
     this->link_->SetLinearVel(math::Vector3(diff_pos.x, diff_pos.y, diff_pos.z));
     this->link_->SetLinearAccel(math::Vector3(0, 0, 0));
     this->link_->SetAngularVel(math::Vector3(diff_rot.GetRoll(), diff_rot.GetPitch(), diff_rot.GetYaw()));
