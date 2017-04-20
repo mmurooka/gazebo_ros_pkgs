@@ -118,11 +118,14 @@ void GazeboRosPose::Load(physics::ModelPtr _model, sdf::ElementPtr _sdf)
   this->rosnode_ = new ros::NodeHandle(this->robot_namespace_);
 
   // Custom Callback Queue
-  ros::SubscribeOptions so = ros::SubscribeOptions::create<geometry_msgs::Pose>(
-    this->topic_name_,1,
-    boost::bind( &GazeboRosPose::UpdateObjectPose,this,_1),
-    ros::VoidPtr(), &this->queue_);
-  this->sub_ = this->rosnode_->subscribe(so);
+  if (this->topic_name_ != "")
+  {
+    ros::SubscribeOptions so = ros::SubscribeOptions::create<geometry_msgs::Pose>(
+      this->topic_name_,1,
+      boost::bind( &GazeboRosPose::UpdateObjectPose,this,_1),
+      ros::VoidPtr(), &this->queue_);
+    this->sub_ = this->rosnode_->subscribe(so);
+  }
 
   if (this->service_name_ != "")
   {
